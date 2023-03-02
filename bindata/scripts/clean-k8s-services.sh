@@ -6,6 +6,13 @@ if [ "$CLUSTER_TYPE" == "openshift" ]; then
 fi
 
 chroot_path="/host"
+delay_shutdown_path="$chroot_path/tmp/sriov-delay-shutdown"
+kubelet_config_path="$chroot_path/etc/kubernetes/kubelet.conf"
+
+# 10 minutes - this should be shorter than the time that is specifed for the
+# terminationGracePeriodSeconds in the daemonset's pod spec, so that everything
+# else in the preStop hook has time to run and the Pod can be terminated properly.
+wait_time=600
 
 function clean_services() {
   # Remove switchdev service files
@@ -32,6 +39,19 @@ function clean_services() {
     sed -i.bak '/hw-offload/d' $ovs_service
   fi
 }
+
+# If the kubelet is configured to shutdown gracefully (>0s shutdownGracePeriod), we need to wait for
+# things to settle before shutting down the node.
+if grep "$kubelet_config_path" -e shutdownGracePeriod | grep -qv \"0s\"; then
+  start=$(date +%s)
+  while [ $(( $(date +%s) - $start )) -lt $wait_time ]; do
+    if [ ! -f "$delay_shutdown_path" ]; then  # don't have to wait anymore
+      break
+    fi
+    sleep 1
+  done
+  rm -f "$delay_shutdown_path"
+fi
 
 clean_services
 # Reload host services
